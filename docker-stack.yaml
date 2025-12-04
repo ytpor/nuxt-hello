@@ -1,0 +1,38 @@
+services:
+  nuxt-hello:
+    image: <APP_IMAGE_VALUE>
+    ports:
+      - target: 3000
+        published: 80
+        protocol: tcp
+        mode: ingress
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints:
+          - node.role == worker
+        max_replicas_per_node: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - nginx-proxy
+
+networks:
+  nginx-proxy:
+    external: true

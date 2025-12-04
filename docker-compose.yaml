@@ -1,0 +1,19 @@
+services:
+  nuxt-hello:
+    build: .
+    ports:
+      - "3000:80"
+    environment:
+      NITRO_HOST: "0.0.0.0"
+      TZ: ${TIMEZONE:-Asia/Kuala_Lumpur}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - nginx-proxy
+
+networks:
+  nginx-proxy:
+    external: true

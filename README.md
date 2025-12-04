@@ -71,3 +71,17 @@ yarn preview
 # bun
 bun run preview
 ```
+
+## Building and running Docker Image
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+OR
+
+```bash
+docker build -t nuxt-hello-app .
+docker run -p 3000:80 nuxt-hello-app
+```

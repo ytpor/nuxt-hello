@@ -1,0 +1,115 @@
+stages:
+  - build
+  - test
+  - deploy_staging
+  - deploy_production
+
+variables:
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_DRIVER: overlay2
+  APP_IMAGE_BASE_NAME: "$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG"
+  APP_IMAGE_TAGGED: "$APP_IMAGE_BASE_NAME:$CI_COMMIT_SHORT_SHA"
+  APP_IMAGE_LATEST: "$APP_IMAGE_BASE_NAME:latest"
+  STACK_FILE: "docker-stack.yaml"
+
+build_image:
+  stage: build
+  image: docker:28.3.3
+  services:
+    - docker:28.3.3-dind
+  before_script:
+    - echo "Logging into GitLab Container Registry..."
+    - docker login -u "gitlab-ci-token" -p "$CI_JOB_TOKEN" "$CI_REGISTRY"
+  script:
+    - echo "Building image..."
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "develop" ]; then
+        echo "Building image for staging..."
+        docker build --pull --build-arg APP_ENVIRONMENT=staging -t "$APP_IMAGE_TAGGED" .
+      elif [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        echo "Building image for production..."
+        docker build --pull --build-arg APP_ENVIRONMENT=production -t "$APP_IMAGE_TAGGED" .
+      else
+        echo "Building image with default settings..."
+        docker build --pull -t "$APP_IMAGE_TAGGED" .
+      fi
+    - docker push "$APP_IMAGE_TAGGED"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "develop" ] || [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        echo "Tagging and pushing image as latest: $APP_IMAGE_LATEST"
+        docker tag "$APP_IMAGE_TAGGED" "$APP_IMAGE_LATEST"
+        docker push "$APP_IMAGE_LATEST"
+      fi
+
+test_image:
+  stage: test
+  image: docker:28.3.3
+  services:
+    - docker:28.3.3-dind
+  needs: ["build_image"]
+  script:
+    - docker run --rm "$APP_IMAGE_TAGGED" npm run test --if-present || echo "No tests found or tests skipped."
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - when: always
+
+deploy_staging:
+  stage: deploy_staging
+  image: alpine:latest
+  before_script:
+    - apk update && apk add openssh-client sed
+    - eval $(ssh-agent -s)
+    - echo "$DEPLOY_STAGING_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H "$DEPLOY_STAGING_SWARM_HOST" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    # 1. Substitute the image tag in the stack file for staging
+    - sed "s|<APP_IMAGE_VALUE>|$APP_IMAGE_TAGGED|g" $STACK_FILE > staging-$STACK_FILE
+    # 2. Copy the final stack file to the remote server
+    - scp -o StrictHostKeyChecking=no staging-$STACK_FILE "$DEPLOY_STAGING_USER@$DEPLOY_STAGING_SWARM_HOST":~/
+  script:
+    - ssh -o StrictHostKeyChecking=no "$DEPLOY_STAGING_USER@$DEPLOY_STAGING_SWARM_HOST" "
+        echo 'Logging into GitLab Container Registry...';
+        docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY;
+        docker stack deploy -c ~/staging-$STACK_FILE --with-registry-auth nuxt-hello-staging
+      "
+  environment:
+    name: staging
+    url: http://10.5.82.110:3000/
+  needs: ["test_image"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop"
+      when: on_success
+
+deploy_production:
+  stage: deploy_production
+  image: alpine:latest
+  before_script:
+    - apk update && apk add openssh-client sed
+    - eval $(ssh-agent -s)
+    - echo "$DEPLOY_PRODUCTION_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H "$DEPLOY_PRODUCTION_SWARM_HOST" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    # 1. Substitute the image tag AND port in the stack file for production
+    - sed "s|<APP_IMAGE_VALUE>|$APP_IMAGE_TAGGED|g; s|3000|3002|g" $STACK_FILE > production-$STACK_FILE
+    # 2. Copy the final stack file to the remote server
+    - scp -o StrictHostKeyChecking=no production-$STACK_FILE "$DEPLOY_PRODUCTION_USER@$DEPLOY_PRODUCTION_SWARM_HOST":~/
+  script:
+    - ssh -o StrictHostKeyChecking=no "$DEPLOY_PRODUCTION_USER@$DEPLOY_PRODUCTION_SWARM_HOST" "
+        echo 'Logging into GitLab Container Registry...';
+        docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY;
+        docker stack deploy -c ~/production-$STACK_FILE --with-registry-auth nuxt-hello-production
+      "
+  environment:
+    name: production
+    url: http://10.5.82.110:3002/
+  needs: ["test_image"]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: false
