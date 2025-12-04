@@ -8,6 +8,7 @@ RUN npm run build
 
 # Stage 2: Serve the app
 FROM node:24-alpine AS runner
+RUN apk add --no-cache curl
 WORKDIR /app
 COPY --from=build /app/.output ./.output
 ENV NITRO_HOST=0.0.0.0
